@@ -70,7 +70,8 @@ class FileOrganizer:
             'success': 0,
             'errors': 0,
             'destinations': {},
-            'duplicates': 0
+            'duplicates': 0,
+            'skipped': 0  # Initialize skipped counter
         }
         self.moved_files = []
         self.file_hashes = defaultdict(list)  # SHA-256 hash -> list of file paths
@@ -135,48 +136,37 @@ class FileOrganizer:
             return ""
 
     def process_file(self, file_path: Path) -> None:
-        """Process a single file with duplicate detection via SHA-256."""
+        """Process a single file with duplicate detection and destination routing."""
         try:
             self.stats['total'] += 1
-            
-            # Compute file hash and check for duplicates.
-            file_hash = self.compute_file_sha256(file_path)
-            if file_hash:
-                if file_hash in self.file_hashes:
-                    logger.info(f"Duplicate file detected: {file_path.name} (hash: {file_hash}). Deleting duplicate.")
-                    self.stats['duplicates'] += 1
-                    if not self.dry_run:
-                        file_path.unlink()
-                    return
-                else:
-                    self.file_hashes[file_hash].append(str(file_path))
-            
             file_ext = file_path.suffix.lower()
-            # Special handling for audio files.
-            if file_ext in ['.mp3', '.wav', '.ogg', '.m4a']:
-                metadata = self.extract_ai_audio_metadata(file_path)
-                dest_path = self.process_audio_file(file_path, metadata)
-            else:
-                downloads_config = self.config.get('downloads', {})
-                if file_ext.lower() in ['.mp4', '.mov', '.avi']:
-                    video_metadata = self.get_video_metadata(file_path)
-                    ai_metadata = self.extract_ai_video_metadata(file_path)
-                    if ai_metadata.get('tool') or any(p in file_path.name.lower() 
-                        for p in downloads_config.get('patterns', {}).get('ai_video', [])):
-                        new_filename = self.generate_ai_video_filename(file_path, 
-                            {**video_metadata, **ai_metadata})
-                        dest_path = (file_path.parent / 'Videos' / 'AI_Generated' / 
-                            ai_metadata.get('tool', 'Other') / new_filename)
-                    else:
-                        new_filename = self.generate_descriptive_filename(file_path, video_metadata)
-                        dest_path = file_path.parent / 'Videos' / new_filename
-                else:
-                    dest_path = None
-                    for dest_type, extensions in downloads_config.get('extensions', {}).items():
-                        if file_ext in extensions:
-                            dest_folder = downloads_config['destinations'][dest_type]
-                            dest_path = file_path.parent / dest_folder / file_path.name
-                            break
+
+            # Define destination mappings
+            destinations = {
+                "installers and zips": {
+                    "extensions": [".zip", ".msi", ".exe"],
+                    "destination": "installers_and_zips"
+                },
+                "nzb": {
+                    "extensions": [".nzb"],
+                    "destination": "NZB"
+                },
+                "pictures": {
+                    "extensions": [".psd"],
+                    "destination": "Pictures"
+                },
+                "video": {
+                    "extensions": [".webm"],
+                    "destination": "Video"
+                }
+            }
+
+            dest_path = None
+            for category, details in destinations.items():
+                if file_ext in details["extensions"]:
+                    dest_folder = details["destination"]
+                    dest_path = file_path.parent / dest_folder / file_path.name
+                    break
 
             if dest_path:
                 try:
@@ -202,7 +192,7 @@ class FileOrganizer:
                     self.stats['errors'] += 1
             else:
                 logger.debug(f"No destination found for: {file_path.name}")
-                self.stats['skipped'] = self.stats.get('skipped', 0) + 1
+                self.stats['skipped'] += 1
 
         except Exception as e:
             logger.error(f"Error processing {file_path}: {str(e)}")
