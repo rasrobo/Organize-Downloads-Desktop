@@ -75,6 +75,24 @@ class FileOrganizer:
         }
         self.moved_files = []
         self.file_hashes = defaultdict(list)  # SHA-256 hash -> list of file paths
+        
+        # Define extensions to keep in original location
+        self.keep_in_place_extensions = {
+            # Code files
+            ".py", ".js", ".html", ".css", ".java", ".cpp", ".h", ".php",
+            # Config files
+            ".json", ".yaml", ".yml", ".toml", ".ini",
+            # Git files
+            ".gitignore", ".gitattributes",
+            # Virtual environment
+            ".virtualenv", ".venv",
+            # Project files
+            "requirements.txt", "package.json", "composer.json",
+            # Python cache files
+            ".pyc", ".pyo", ".pyd",
+            # Version control
+            ".git", ".svn"
+        }
 
     def detect_ai_generated(self, file_path: Path) -> Optional[str]:
         """Detect if file is AI-generated and return the AI tool used"""
@@ -135,64 +153,131 @@ class FileOrganizer:
             logger.error(f"Error computing hash for {file_path}: {e}")
             return ""
 
+    def _detect_file_category(self, file_ext: str) -> str:
+        """Detect appropriate category for file extension"""
+        # Common file type mappings
+        type_mappings = {
+            # Images
+            'images': ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.jfif', '.tiff', '.ico'],
+            # Documents
+            'documents': ['.pdf', '.doc', '.docx', '.txt', '.rtf', '.odt', '.xlsx', '.csv', '.pptx'],
+            # Audio
+            'music': ['.mp3', '.wav', '.flac', '.m4a', '.ogg', '.aac', '.wma'],
+            # Video
+            'video': ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.webm', '.flv', '.m4v'],
+            # Archives
+            'archives': ['.zip', '.rar', '.7z', '.tar', '.gz', '.bz2'],
+            # Code
+            'code': ['.py', '.js', '.html', '.css', '.java', '.cpp', '.h', '.php'],
+            # Executables
+            'executables': ['.exe', '.msi', '.deb', '.rpm', '.app', '.dmg'],
+            # System
+            'system': ['.sys', '.dll', '.so', '.dylib', '.reg', '.ini', '.config', '.pat']
+        }
+
+        # Check known mappings
+        for category, extensions in type_mappings.items():
+            if file_ext.lower() in extensions:
+                return category
+
+        # If no match found, use MIME type detection as fallback
+        try:
+            import magic
+            mime = magic.Magic(mime=True)
+            mime_type = mime.from_buffer(open(file_path, 'rb').read(2048))
+            main_type = mime_type.split('/')[0]
+            
+            # Map MIME main types to categories
+            mime_mappings = {
+                'image': 'images',
+                'audio': 'music',
+                'video': 'video',
+                'text': 'documents',
+                'application': 'executables'
+            }
+            return mime_mappings.get(main_type, 'other')
+        except ImportError:
+            # If python-magic not available, use extension as category
+            return file_ext[1:].lower()  # Remove leading dot
+
     def process_file(self, file_path: Path) -> None:
-        """Process a single file with duplicate detection and destination routing."""
+        """Process a file and move its entire parent folder if it contains media files."""
         try:
             self.stats['total'] += 1
             file_ext = file_path.suffix.lower()
 
-            # Define destination mappings
-            destinations = {
-                "installers and zips": {
-                    "extensions": [".zip", ".msi", ".exe"],
-                    "destination": "installers_and_zips"
+            # Define base destination directory
+            base_dest = Path("/mnt/z/sort")
+
+            # Skip processing if file should stay in place
+            if file_ext in self.keep_in_place_extensions or file_path.name in self.keep_in_place_extensions:
+                if file_ext in ['.py', '.pyc', '.pyd']:  # Development files
+                    logger.debug(f"Skipping development file: {file_path.name}")
+                else:
+                    logger.debug(f"Keeping in place: {file_path.name}")
+                self.stats['skipped'] += 1
+                return
+
+            # Media type groups and their extensions
+            media_groups = {
+                "Videos": {
+                    "main": [".mkv", ".mp4", ".avi", ".mov", ".webm"],
+                    "related": [".srt", ".sub", ".idx", ".nfo", ".txt", ".jpg", ".png"]
                 },
-                "nzb": {
-                    "extensions": [".nzb"],
-                    "destination": "NZB"
+                "Music": {
+                    "main": [".mp3", ".wav", ".ogg", ".m4a", ".flac"],
+                    "related": [".cue", ".log", ".m3u", ".jpg", ".png", ".txt"]
                 },
-                "pictures": {
-                    "extensions": [".psd"],
-                    "destination": "Pictures"
+                "Pictures": {
+                    "main": [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"],
+                    "related": [".txt", ".md"]
                 },
-                "video": {
-                    "extensions": [".webm"],
-                    "destination": "Video"
+                "Documents": {
+                    "main": [".pdf", ".doc", ".docx", ".txt", ".xlsx", ".csv"],
+                    "related": [".jpg", ".png"]
                 }
             }
 
-            dest_path = None
-            for category, details in destinations.items():
-                if file_ext in details["extensions"]:
-                    dest_folder = details["destination"]
-                    dest_path = file_path.parent / dest_folder / file_path.name
-                    break
+            # Find the media group this file belongs to
+            for group_name, extensions in media_groups.items():
+                if file_ext in extensions["main"]:
+                    source_folder = file_path.parent
+                    folder_name = source_folder.name
 
-            if dest_path:
-                try:
-                    dest_path.parent.mkdir(parents=True, exist_ok=True)
-                    if dest_path.exists():
-                        counter = 1
-                        while dest_path.exists():
-                            new_name = f"{dest_path.stem}_{counter}{dest_path.suffix}"
-                            dest_path = dest_path.parent / new_name
-                            counter += 1
-                    if not self.dry_run:
-                        file_path.rename(dest_path)
-                        self.stats['success'] += 1
-                        self.moved_files.append((str(file_path), str(dest_path)))
-                        logger.info(f"Moving: {file_path.name} → {dest_path}")
+                    # Check if folder contains related files
+                    related_files = [
+                        f for f in source_folder.iterdir()
+                        if f.is_file() and f != file_path and 
+                        f.suffix.lower() in extensions["related"]
+                    ]
+
+                    if related_files:
+                        # Move the entire folder
+                        dest_folder = base_dest / group_name / folder_name
+                        if not self.dry_run:
+                            dest_folder.mkdir(parents=True, exist_ok=True)
+                            for item in source_folder.iterdir():
+                                new_path = dest_folder / item.name
+                                item.rename(new_path)
+                                logger.info(f"Moving: {item.name} → {new_path}")
+                                self.moved_files.append((str(item), str(new_path)))
+                            self.stats['success'] += 1
+                        else:
+                            logger.info(f"Would move folder {folder_name} to {group_name}/")
+                            for item in source_folder.iterdir():
+                                logger.debug(f"  - {item.name}")
                     else:
-                        logger.info(f"Would move: {file_path.name} → {dest_path}")
-                except PermissionError:
-                    logger.error(f"Permission denied: {file_path}")
-                    self.stats['errors'] += 1
-                except Exception as e:
-                    logger.error(f"Error moving file {file_path}: {e}")
-                    self.stats['errors'] += 1
-            else:
-                logger.debug(f"No destination found for: {file_path.name}")
-                self.stats['skipped'] += 1
+                        # Move single file
+                        dest_path = base_dest / group_name / file_path.name
+                        if not self.dry_run:
+                            dest_path.parent.mkdir(parents=True, exist_ok=True)
+                            file_path.rename(dest_path)
+                            logger.info(f"Moving: {file_path.name} → {dest_path}")
+                            self.moved_files.append((str(file_path), str(dest_path)))
+                            self.stats['success'] += 1
+                        else:
+                            logger.info(f"Would move: {file_path.name} → {group_name}/")
+                    break
 
         except Exception as e:
             logger.error(f"Error processing {file_path}: {str(e)}")
@@ -483,13 +568,11 @@ class FileOrganizer:
                 str(file_path)
             ]
             result = subprocess.run(cmd, capture_output=True, text=True)
-            logger.debug(f"ffprobe raw output for {file_path.name}: {result.stdout}")
-
+            
             if result.returncode == 0:
                 metadata = json.loads(result.stdout)
                 format_tags = metadata.get('format', {}).get('tags', {})
-                logger.debug(f"Extracted format_tags for {file_path.name}: {format_tags}")
-
+                
                 info = {
                     'title': format_tags.get('title', ''),
                     'artist': format_tags.get('artist', ''),
@@ -503,11 +586,10 @@ class FileOrganizer:
                     'tool': '',
                     'is_ai': False
                 }
-
+                
+                # Priority 1: Check for specific tool patterns in filename/title.
                 filename = file_path.name.lower()
                 title_text = info['title'].lower() if info['title'] else filename
-
-                # Priority 1: Check for specific tool patterns in filename/title.
                 udio_patterns = [
                     (r'v\d+\.\d+\.\d+', 'Version number with dots'),
                     (r'ext.*v\d+\.\d+', 'Extended version'),
@@ -515,10 +597,10 @@ class FileOrganizer:
                     (r'udio.*v\d+', 'Udio version')
                 ]
                 suno_patterns = [
+                    (r'iteration.*\d+', 'Iteration series'),
                     (r'echo.*\d+', 'Echo series'),
                     (r'cipher.*\d+', 'Cipher series'),
-                    (r'\s\d+(\s*-\s*instrumental)?$', 'Numbered instrumental'),
-                    (r'iteration.*\d+', 'Iteration series')
+                    (r'\s\d+(\s*-\s*instrumental)?$', 'Numbered instrumental')
                 ]
                 for pattern, desc in udio_patterns:
                     if any(re.search(pattern, text) for text in [filename, title_text]):
@@ -526,7 +608,6 @@ class FileOrganizer:
                         info['tool'] = 'udio'
                         logger.debug(f"Udio pattern detected ({desc}): {pattern}")
                         return info
-
                 for pattern, desc in suno_patterns:
                     if any(re.search(pattern, text) for text in [filename, title_text]):
                         info['is_ai'] = True
@@ -698,6 +779,70 @@ class FileOrganizer:
         logger.debug(f"Metadata used: {metadata}")
         return new_path
 
+    def process_directory(self, dir_path: Path, merge: bool = False) -> None:
+        """Process directory recursively with optional subfolder merging"""
+        try:
+            # Skip processing packages and special directories
+            skip_patterns = {
+                # Python-specific
+                'site-packages', 'dist-packages', '__pycache__',
+                'venv', 'env', '.venv', '.env',
+                # Version control
+                '.git', '.svn',
+                # IDE
+                '.idea', '.vscode',
+                # System
+                '.local', '.cache'
+            }
+
+            # Skip if directory matches any skip pattern
+            if any(part in skip_patterns or part.startswith('.') or part.endswith('.dist-info')
+                   for part in dir_path.parts):
+                logger.debug(f"Skipping special directory: {dir_path}")
+                return
+
+            # Skip if directory contains package indicators
+            if any(dir_path.glob(p) for p in ['setup.py', 'pyproject.toml', 'requirements.txt']):
+                logger.debug(f"Skipping Python package directory: {dir_path}")
+                return
+
+            # Process all files in current directory
+            for file_path in dir_path.glob('*'):
+                if file_path.is_file():
+                    # Skip package metadata files
+                    if file_path.name.lower() in {
+                        'license', 'license.txt', 'license.md',
+                        'readme', 'readme.txt', 'readme.md',
+                        'setup.py', 'setup.cfg', 'pyproject.toml',
+                        'requirements.txt', 'manifest.in',
+                        'entry_points.txt', 'top_level.txt'
+                    }:
+                        continue
+                    
+                    self.process_file(file_path)
+                elif file_path.is_dir():
+                    # Skip if directory name matches skip patterns
+                    if (file_path.name in skip_patterns or
+                        file_path.name.startswith('.') or
+                        file_path.name.endswith('.dist-info')):
+                        continue
+                    
+                    # Recursively process valid subdirectories
+                    self.process_directory(file_path, merge)
+                    
+                    # Remove empty directories if merge is enabled
+                    if merge and file_path.exists():
+                        try:
+                            if not any(file_path.iterdir()):
+                                file_path.rmdir()
+                                logger.debug(f"Removed empty directory: {file_path}")
+                        except Exception as e:
+                            logger.error(f"Error removing directory {file_path}: {e}")
+
+        except Exception as e:
+            logger.error(f"Error processing directory {dir_path}: {e}")
+            self.stats['errors'] += 1
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description='Organize files in directories.')
@@ -709,20 +854,33 @@ def main():
     parser.add_argument('--report', choices=['text', 'json', 'csv', 'html'], default='text')
     parser.add_argument('--report-dir', type=str, help='Custom report directory')
     parser.add_argument('--ai-only', action='store_true', help='Process only AI-generated files')
+    parser.add_argument('-r', '--recursive', action='store_true', 
+                       help='Process directories recursively')
+    parser.add_argument('-m', '--merge', action='store_true',
+                       help='Merge processed subfolders with parent')
     args = parser.parse_args()
+    
     if args.verbose:
         logger.setLevel(logging.DEBUG)
+        
     # Load configuration
     if args.config:
         with open(args.config) as f:
             config = yaml.safe_load(f)
     else:
         config = FOLDER_MAPPINGS
+        
     source_dir = Path(args.source) if args.source else Path.home() / 'Downloads'
     organizer = FileOrganizer(config, args.dry_run)
-    for file_path in source_dir.glob('*'):
-        if file_path.is_file():
-            organizer.process_file(file_path)
+    
+    if args.recursive:
+        organizer.process_directory(source_dir, args.merge)
+    else:
+        # Original non-recursive behavior
+        for file_path in source_dir.glob('*'):
+            if file_path.is_file():
+                organizer.process_file(file_path)
+                
     if args.summary:
         organizer.generate_report(args.report, args.report_dir)
 
