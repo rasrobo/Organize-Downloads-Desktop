@@ -32,6 +32,14 @@ Intelligent file organization with AI content detection, specializing in managin
 - Comprehensive movement logs
 - Duplicate detection reports
 
+### 🛠️ Audit Functionality
+- Fixes misplaced files (e.g., images in Documents folder)
+- Corrects movie years using IMDb data
+- Properly categorizes family vs adult content
+- Moves content to appropriate directories
+- Removes empty directories
+- Generates detailed report of changes
+
 ## 🚀 Quick Start
 
 ```bash
@@ -57,6 +65,12 @@ python odd.py -s ~/Downloads -v --debug         # Verbose debug output
 # Generate reports
 python odd.py -s ~/Downloads --report json      # JSON report
 python odd.py -s ~/Downloads --report csv       # CSV report
+
+# Basic organization
+python odd.py -s /path/to/source -r -m
+
+# Run with audit to fix organization issues
+python odd.py -s /path/to/source --audit
 ```
 
 ## ⚙️ Configuration
@@ -126,5 +140,30 @@ MIT License - See LICENSE file for details
 ## 👥 Contributing
 
 Contributions welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+
+### Options
+
+- `-s, --source`: Source directory to organize
+- `-r, --recursive`: Process directories recursively
+- `-m, --merge`: Merge processed subfolders with parent
+- `--audit`: Run organization audit to fix categorization issues
+- `-d, --dry-run`: Show what would be done without making changes
+- `-v, --verbose`: Show detailed progress
+
+## Donations
+
+If you find this software useful and would like to support its development, you can buy me a coffee! Your support is greatly appreciated.
+
+[![Buy Me A Coffee](https://cdn.buymeacoffee.com/buttons/default-orange.png)](https://buymeacoffee.com/robodigitalis)
+
+## Contributing
+Contributions welcome! Please feel free to submit a Pull Request.
+
+## License
+MIT License
+
+---
+
+Keywords: file organization, media organizer, automatic file sorting, media library manager, file categorization, folder structure optimizer, media metadata extraction, duplicate file detection, AI-generated content detection, family content detection, video organization, music organization, photo organization, document sorting, directory cleanup, automated file management, file classification, IMDb integration, media renaming tool, file deduplication
 
 
